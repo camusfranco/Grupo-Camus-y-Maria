@@ -5,10 +5,6 @@ date: "8/25/2021"
 output: html_document
 ---
 
-```{r , include=FALSE, results='hide', echo=F, warning=FALSE}
-setwd("~/Documents/Academic/Maestría/Trimestre VIII/Análisis Predictivo de Negocios")
-```
-
 
 ```{r , include=FALSE, results='hide', echo=F, warning=FALSE}
 #Paquetes

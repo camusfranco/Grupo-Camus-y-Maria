@@ -1,0 +1,315 @@
+---
+title: "Regresión Lineal"
+author: "Camus Franco & María Díaz"
+date: "8/25/2021"
+output: html_document
+---
+
+```{r , include=FALSE, results='hide', echo=F, warning=FALSE}
+setwd("~/Documents/Academic/Maestría/Trimestre VIII/Análisis Predictivo de Negocios")
+```
+
+
+```{r , include=FALSE, results='hide', echo=F, warning=FALSE}
+#Paquetes
+if (!require("openxlsx"))     install.packages("openxlsx") 
+if (!require("dplyr"))        install.packages("dplyr", repos = "http://cran.us.r-project.org")
+if (!require("jtools"))       install.packages("jtools", repos = "http://cran.us.r-project.org") 
+if (!require("gtsummary"))    install.packages("gtsummary") 
+if (!require("gmodels"))      install.packages("gmodels") 
+if (!require("knitr"))        install.packages("knitr") 
+if (!require("kableExtra"))   install.packages("kableExtra") 
+if (!require("ggplot2"))      install.packages("ggplot2")	
+if (!require("readxl"))       install.packages("readxl")	
+if (!require("quantreg"))     install.packages("quantreg")	
+if (!require("normtest"))     install.packages("normtest")	
+
+
+
+
+library(openxlsx)    #Abrir archivos de excel
+library(dplyr)       #funciones
+library(jtools)        
+library(gtsummary)   #Summaries
+library(gmodels)     #Crosstables
+library(table1)      #Tablas
+library(knitr) 
+library(kableExtra) 
+library(data.table)  #Growth Calculation
+library(ggplot2)     #Gráficas
+library(readxl)      #Abrir archivos de excel
+library(quantreg)    #Regresión por Cuantiles
+library(normtest)    #Test Normalidad
+library(sjPlot)
+library(sjmisc)
+library(sjlabelled)
+```
+
+
+```{r , include=FALSE, results='hide', echo=F, warning=FALSE}
+#Data import
+  #dataset<- read.csv("Datos Antiguedad Firmas.csv", header= TRUE,sep=";") %>%
+   dataset<- read_excel("Datos Antiguedad Firmas.xlsx") %>%
+            arrange(RNC, Periodo)
+```
+
+
+```{r}
+###Arquitectura de datos
+
+#Rename de Variables
+  dataset<- dataset %>%
+              rename(Activos=TOTAL_ACTIVOS,
+                     IngresosBrutos=INGRESOS_BRUTOS,
+                     PasivosPatrimonio=TOTAL_PASIVOS_Y_PATRIMONIO,
+                     Ventas=monto_facturado
+                     )
+
+#Conversión de estructura de los datos 
+  dataset$AdmLocal      <-as.factor(dataset$AdmLocal)
+  dataset$TipoSociedad  <-as.factor(dataset$TipoSociedad)
+  dataset$RNC           <-as.character(dataset$RNC)
+  dataset$Ventas        <-as.numeric(dataset$Ventas)
+  dataset$Antiguedad    <-as.numeric(dataset$Antiguedad)
+
+  
+  
+#Cálculo Variables: 
+  
+ #--Ratio Liquidez 
+  #Supuesto: solo se está calculando el Ratio para empresas que hayan declarado activos y pasivos para evitar 
+  #errores de división y/o sobrestimaciones.
+  dataset$Ratioliquidez  <-ifelse(dataset$ActivosCorrientes ==0  | dataset$PasivosCorrientes==0, 0.00,dataset$ActivosCorrientes/dataset$PasivosCorrientes)
+  
+  #--Calculo de Pasivos.
+  #la casilla de Total_Pasivos_y_Patrimonio no suele ser llenada correctamente por el contribuyente. 
+  dataset$Pasivos         <-dataset$Activos-dataset$Patrimonio
+  
+  
+  #--Calculo de Ventas
+  dataset$Ventas        <-abs(dataset$Ventas)
+  dataset$Ventas         <-ifelse(is.na(dataset$Ventas), 0.00,dataset$Ventas)
+  
+  
+ #--Categoria 
+  #Categorías de las empresas, adaptado del planteamiento propuesto por Cod, et al.
+  dataset$Categoria       <-ifelse(dataset$Antiguedad<=2,                                  "Novato",
+                              ifelse(dataset$Antiguedad>=3     &  dataset$Antiguedad<=10,  "Joven",
+                               ifelse(dataset$Antiguedad>=11   &  dataset$Antiguedad<= 20, "Maduro",
+                                 ifelse(dataset$Antiguedad>=21, "Experimentado", 'NA'))) 
+                                     )
+  
+  dataset$Categoria       <- as.factor(dataset$Categoria)
+
+
+#Transformaciones para tasas de crecimiento y logaritmos
+  dataset$IngresosBrutos   <-ifelse(dataset$IngresosBrutos<1, 1, dataset$IngresosBrutos)
+  dataset$Patrimonio       <-ifelse(dataset$Patrimonio    <1, 1, dataset$Patrimonio)
+  dataset$Beneficios       <-ifelse(dataset$Beneficios    <1, 1, dataset$Beneficios)
+  dataset$Activos          <-ifelse(dataset$Activos       <1, 1, dataset$Activos)
+  dataset$Ventas           <-ifelse(dataset$Ventas        <1, 1, dataset$Ventas)
+  dataset$Pasivos          <-ifelse(dataset$Pasivos       <1, 1, dataset$Pasivos)
+   
+    
+  
+#Creación Variables de crecimiento  
+#--Crecimiento 
+  #El planteamiento de la transf. logaritimica es relevante ya que al momento de llenar la declaracion, por posibles errores colocan montos inferiores a 1 (decimales), sobrevalorando el crecimiento.
+  
+  #--Ventas
+  dataset <-dataset[,] %>%
+      group_by(RNC) %>%
+      arrange(Periodo) %>%
+      mutate(Crecimiento = (Ventas - lag(Ventas))/lag(Ventas))
+ 
+
+  #--Ingresos
+  dataset <-dataset[,]  %>%
+      group_by(RNC) %>%
+      arrange(Periodo) %>%
+      mutate(CrecIngresos = (IngresosBrutos - lag(IngresosBrutos))/lag(IngresosBrutos))
+  
+  #--Patrimonio
+  dataset <-dataset[,]  %>%
+      group_by(RNC) %>%
+      arrange(Periodo) %>%
+      mutate(CrecPatrimonio = (Patrimonio - lag(Patrimonio))/lag(Patrimonio))
+  
+  #--Beneficios
+  dataset <-dataset[,] %>%
+      group_by(RNC) %>%
+      arrange(Periodo) %>%
+      mutate(CrecBeneficios = (Beneficios - lag(Beneficios))/lag(Beneficios))
+  
+  #--Activos
+  dataset  <-dataset[,] %>%
+      group_by(RNC) %>%
+      arrange(Periodo) %>%
+      mutate(CrecActivos = (Activos - lag(Activos))/lag(Activos))
+  
+  #--Pasivos
+  dataset  <-dataset[,] %>%
+      group_by(RNC) %>%
+      arrange(Periodo) %>%
+      mutate(CrecPasivos = (Pasivos - lag(Pasivos))/lag(Pasivos))
+  
+
+#Filtro el dataset de interés
+  #Eliminación variables no necesarias (Nombre, Cod_ActEcon, ActEcon, Cod_AdmLocal, AdmLocal, Municipio, Provincia,InicioAct, RatioLiquidez,ID)
+ 
+  data   <- subset(dataset[,-c(3:6,8,9,11,18,19,20,21)], dataset$Periodo>=2018)  %>%
+  arrange(RNC, Periodo)%>%
+    na.omit(data)
+
+
+  #****COMMENT: Tenemos dos opciones, si se truncan todas las variables cualitativas a valores superior a 1 (0), se reduciria a 570 obs. Si se dejan, serían 2,083 obs. Esto indica que hay mucha presencia de valores en 0s, en algunas de las variables. Procedí a dejarlas, pero es bueno discutirlo.
+
+ 
+```
+
+
+```{r}
+#Sección Descriptiva
+
+  #Resumen Estadístico
+
+ # subset(data[,-c(1:4)], data$Periodo==2018) %>% #eliminando variables cualitativas
+#table1::table1(~Activos + Pasivos + IngresosBrutos +Ventas +Ratio_Liquidez | Categoria, data = data)
+
+# data[,-c(1:4)]%>% 
+# summary(scientific=FALSE)
+ 
+  
+  #Cantidad de Contribuyentes por Categoría
+summary(data$Categoria)
+  
+  #Actividad Económica por Categoría (%). TOP 5
+  addmargins(prop.table(table(data$AdmLocal, by=data$Categoria))*100
+                ,2 ) %>%
+    round(2)  
+  
+  
+#Density Plots
+  
+  #--Antiguedad
+ data %>%
+     ggplot( aes(x=Antiguedad)) +
+     geom_density(fill="darkblue") +
+     labs(x= "Años", y = "Densidad") +
+     ggtitle("Distribución de la Antiguedad")+
+    theme_bw()+
+     theme(panel.border = element_blank(), 
+            panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(), 
+            axis.title.y = element_text(size = 12, margin=margin(0,10,0,0)),
+            axis.title.x = element_text(size = 12, margin=margin(10,0,0,0)),
+            axis.ticks = element_blank(),
+            plot.title  = element_text( size = 16, margin=margin(0,0,30,0))
+           )
+  
+ ##--Crecimiento Ventas
+  
+ data %>%
+   filter (Crecimiento <30) %>% #Hay empresas con crecimientos outliers, se filtro para poder apreciar la gráfica.
+     ggplot( aes(x=Crecimiento)) +
+     geom_density(fill="darkblue") +
+     labs(x= "Crecimiento %", y = "Densidad") +
+     ggtitle("Distribución del Crecimiento %")+
+    theme_bw()+
+     theme(panel.border = element_blank(), 
+            panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(), 
+            axis.title.y = element_text(size = 12, margin=margin(0,10,0,0)),
+            axis.title.x = element_text(size = 12, margin=margin(10,0,0,0)),
+            axis.ticks = element_blank(),
+            plot.title  = element_text( size = 16, margin=margin(0,0,30,0))
+           )
+
+ ##--Dist Log. Ventas  
+ data %>%
+    ggplot( aes(x=log(Ventas))) +
+     geom_density(fill="darkblue") +
+     labs(x= "Log Ventas", y = "Densidad") +
+     ggtitle("Distribución del Log.Ventas ")+
+    theme_bw()+
+     theme(panel.border = element_blank(), 
+            panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(), 
+            axis.title.y = element_text(size = 12, margin=margin(0,10,0,0)),
+            axis.title.x = element_text(size = 12, margin=margin(10,0,0,0)),
+            axis.ticks = element_blank(),
+            plot.title  = element_text( size = 16, margin=margin(0,0,30,0))
+           )
+  
+ 
+  ##--Crecimiento por categoría
+  data %>%
+    filter (Crecimiento <30) %>% #Hay empresas con crecimientos outliers, se filtro para poder apreciar la gráfica.
+    ggplot(aes(x=Crecimiento)) + 
+    geom_density(fill="darkblue") + 
+    facet_wrap(~Categoria) +
+    labs(x= "Crecimiento %", y = "Densidad") +
+    ggtitle("Distribución del Crecimiento por Categoría")+
+    theme_bw()+
+    theme(panel.border = element_blank(), 
+            panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(), 
+            axis.title.y = element_text(size = 12, margin=margin(0,10,0,0)),
+            axis.title.x = element_text(size = 12, margin=margin(10,0,0,0)),
+            axis.ticks = element_blank(),
+            plot.title  = element_text( size = 16, margin=margin(0,0,30,0))
+           )
+  
+    ##--Cantidad de empleados acorde a la categoria
+  data %>%
+    filter (CantEmpleados <300) %>% #Hay empresas con crecimientos outliers, se filtro para poder apreciar la gráfica.
+    ggplot(aes(x=CantEmpleados)) + 
+    geom_density(fill="darkblue") + 
+    facet_wrap(~Categoria) +
+    labs(x= "Crecimiento %", y = "Densidad") +
+    ggtitle("Distribución Cantidad Empleados por Categoría")+
+    theme_bw()+
+    theme(panel.border = element_blank(), 
+            panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(), 
+            axis.title.y = element_text(size = 12, margin=margin(0,10,0,0)),
+            axis.title.x = element_text(size = 12, margin=margin(10,0,0,0)),
+            axis.ticks = element_blank(),
+            plot.title  = element_text( size = 16, margin=margin(0,0,30,0))
+           )
+  
+  
+
+```
+
+```{r}
+#Modelo 1. Todas las variables, usando ventas como dependiente
+lmreg<- lm(log(Ventas)~ Antiguedad + CantEmpleados + CantProveedores+CantClientes+log(Beneficios)+log(Activos)+log(Pasivos)+log(IngresosBrutos)+Ratioliquidez, data=data)
+
+#Modelo 2. Solo las variables significaticas
+lmreg1<- lm(log(Ventas)~ Antiguedad  + CantProveedores+log(Beneficios)+log(Activos)+log(IngresosBrutos), data=data)
+
+#Modelo 3. Utilizando crecimiento como dep.
+lmreg2<-  lm(Crecimiento ~Antiguedad + CantEmpleados + CantProveedores+CantClientes+CrecBeneficios+CrecActivos+CrecPasivos+CrecIngresos+Ratioliquidez, data=data)
+
+#Modelo 4. Utilizando crecimiento como dep.y variables significativas
+lmreg3<-  lm(Crecimiento ~Antiguedad + CantEmpleados +CantClientes+CrecIngresos, data=data)
+
+#Modelo 5. Utilizando crecimiento como dep.
+lmreg4<-  lm(log(Ventas) ~Antiguedad + CantEmpleados + CantProveedores+CantClientes+CrecBeneficios+CrecActivos+CrecPasivos+CrecIngresos+Ratioliquidez, data=data)
+
+#Modelo 6. Utilizando crecimiento como dep.
+lmreg5<-  lm(log(Ventas) ~Antiguedad + CantProveedores+CantClientes+CrecActivos+CrecPasivos+CrecIngresos, data=data)
+
+# summary(lmreg)
+# summary(lmreg1)
+# summary(lmreg5)
+
+tab_model(lmreg
+        ,lmreg1
+        ,lmreg5)
+
+```
+
+
+

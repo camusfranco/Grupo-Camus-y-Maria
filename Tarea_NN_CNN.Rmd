@@ -1,0 +1,239 @@
+---
+title: "Tarea2"
+author: "Camus Franco & María Díaz"
+date: "9/6/2021"
+output: html_document
+---
+
+```{r , include=FALSE, results='hide', echo=F, warning=FALSE}
+setwd("~/Documents/Academic/Maestría/Trimestre VIII/Análisis Predictivo de Negocios")
+```
+
+
+```{r , include=FALSE, results='hide', echo=F, warning=FALSE}
+#Paquetes
+
+if (!require("dplyr"))        install.packages("dplyr", repos = "http://cran.us.r-project.org")
+if (!require("knitr"))        install.packages("knitr") 
+if (!require("kableExtra"))   install.packages("kableExtra") 
+if (!require("ggplot2"))      install.packages("ggplot2")	
+if (!require("caTools"))      install.packages("catools", repos = "http://cran.us.r-project.org")	
+if (!require("httpuv"))      install.packages("httpuv", repos = "http://cran.us.r-project.org")	
+
+
+
+
+#Librerias
+library(dplyr)       
+library(knitr) 
+library(kableExtra) 
+library(ggplot2)     
+library(GGally)
+library(neuralnet)   
+library(readxl)      
+library(caTools)
+library(httpuv)
+```
+
+
+```{r , include=FALSE, results='hide', echo=F, warning=FALSE}
+#Data import
+  #dataset<- read.csv("Datos Antiguedad Firmas.csv", header= TRUE,sep=";") %>%
+   dataset<- read_excel("Datos Antiguedad Firmas.xlsx") %>%
+            arrange(RNC, Periodo)
+```
+
+
+```{r, warning=FALSE}
+###Arquitectura de datos
+
+#Rename de Variables
+  dataset<- dataset %>%
+              rename(Activos=TOTAL_ACTIVOS,
+                     IngresosBrutos=INGRESOS_BRUTOS,
+                     PasivosPatrimonio=TOTAL_PASIVOS_Y_PATRIMONIO,
+                     Ventas=monto_facturado
+                     )
+
+#Conversión de estructura de los datos 
+  dataset$AdmLocal      <-as.factor(dataset$AdmLocal)
+  dataset$TipoSociedad  <-as.factor(dataset$TipoSociedad)
+  dataset$RNC           <-as.character(dataset$RNC)
+  dataset$Ventas        <-as.numeric(dataset$Ventas)
+  dataset$Antiguedad    <-as.numeric(dataset$Antiguedad)
+
+  
+  
+#Cálculo Variables: 
+
+  #--Calculo de Ventas
+  dataset$Ventas        <-abs(dataset$Ventas)
+  dataset$Ventas         <-ifelse(is.na(dataset$Ventas), 0.00,dataset$Ventas)
+  
+  
+ #--Categoria 
+  #Categorías de las empresas,donde 0 son jovenes y 1 son experimentadas
+  
+  dataset$Categoria       <-ifelse(dataset$Antiguedad<=15,  0, 1)
+  
+  
+#Transformaciones para tasas de crecimiento y logaritmos
+  dataset$Beneficios       <-ifelse(dataset$Beneficios    <1, 1, dataset$Beneficios)
+  dataset$Ventas           <-ifelse(dataset$Ventas        <1, 1, dataset$Ventas)
+
+  
+#Creación Variables de crecimiento  
+#--Crecimiento 
+  #El planteamiento de la transf. logaritimica es relevante ya que al momento de llenar la declaracion, por posibles errores colocan montos inferiores a 1 (decimales), sobrevalorando el crecimiento.
+  
+  #--Ventas
+  dataset <-dataset[,] %>%
+      group_by(RNC) %>%
+      arrange(Periodo) %>%
+      mutate(Crecimiento = (Ventas - lag(Ventas))/lag(Ventas))
+
+  
+#Filtro el dataset de interés
+ 
+  dataNL<- dataset%>%
+            ungroup() %>% 
+              subset(Periodo==2018) %>% 
+                 select(Crecimiento, Antiguedad, CantProveedores, Categoria, Beneficios) %>% 
+                   na.omit() 
+  
+  #Normalizando variables
+ normalize <- function(x) {
+                            return ((x - min(x)) / (max(x) - min(x)))
+                          }
+ 
+ scaled_data <- as.data.frame(lapply(dataNL, normalize))
+ 
+ #Set de entrenamiento y prueba
+ set.seed(12)
+ dt         <- sort(sample(nrow(scaled_data),nrow(scaled_data)*0.7)) 
+ trainset   <- scaled_data[dt,] 
+ testset    <- scaled_data[-dt,]
+  
+ 
+```
+
+
+```{r, warning=FALSE}
+#Correlación y distribuciones
+ggpairs(scaled_data[,],
+        aes(color=as.factor(Categoria), alpha=0.75),
+        lower=list(continuous='smooth'))+ 
+         theme_bw()+ 
+         labs(title='Categoría de las Empresas')+ theme(plot.title=element_text(face='bold',color='black',hjust=0.5,size=12)
+        )
+
+#Correlación
+ggcorr(scaled_data[,], name = "corr", label = TRUE)+
+  theme(legend.position="none")+
+  labs(title="Categoría de las Empresas")+
+  theme(plot.title=element_text(face='bold',color='black',hjust=0.5,size=12))
+```
+
+
+```{r}
+
+#Neural Network
+
+nn <- neuralnet(Categoria ~  CantProveedores + Crecimiento + Beneficios 
+                ,data=trainset
+                ,hidden=c(2,1)
+                ,linear.output=FALSE
+                ,threshold=0.01
+                )
+
+
+#Matriz de Resultados
+nn$result.matrix %>% 
+  kable(booktabs = TRUE) %>%
+    kable_styling(position = "center", full_width=FALSE, html_font = "Cambria")
+
+#Plot
+plot(nn,rep = "best")
+```
+
+```{r,warning=FALSE}
+
+#Testeando los resultados
+
+temp_test  <-subset(testset, select = c("CantProveedores", "Crecimiento", "Beneficios")) 
+
+#Resultados
+nn.results <- compute(nn, temp_test)
+results    <- data.frame(actual = testset$Categoria, prediction = nn.results$net.result) %>% 
+                sapply(round,digits=0) %>% 
+                  as.data.frame()
+
+#Matriz de Confusión
+
+attach(results)
+table(actual,prediction) %>% 
+  kbl(booktabs = TRUE, caption = "Matriz de Confusión (actual/predicho)") %>%
+    kable_styling(position = "center", full_width=FALSE, html_font = "Cambria")
+
+#Los resultados indican que hay 444 falsos positivos, 31 positivos verdaderos, 132 falsos negativos y 18 positivos falsos.
+```
+
+
+```{r,warning=FALSE, echo=FALSE}
+#Accuracy
+paste0("El accuracy es de un ", 576/625)
+
+
+```
+
+```{r}
+
+#Neural Network con 3 hidden layers
+
+nnc <- neuralnet(Categoria ~ CantProveedores + Crecimiento + Beneficios 
+                ,data=trainset
+                ,hidden=c(3,1)
+                ,linear.output=FALSE
+                ,threshold=0.01
+                )
+
+
+#Matriz de Resultados
+nnc$result.matrix %>% 
+  kable(booktabs = TRUE) %>%
+    kable_styling(position = "center", full_width=FALSE)
+
+
+#Plot
+plot(nnc,rep = "best")
+```
+
+```{r,warning=FALSE}
+
+#Testeando los resultados
+
+temp_testc  <-subset(testset, select = c("CantProveedores", "Crecimiento", "Beneficios")) 
+
+#Resultados
+nn.resultsc <- compute(nn, temp_test)
+resultsc    <- data.frame(actual = testset$Categoria, prediction = nn.results$net.result) %>% 
+                sapply(round,digits=0) %>% 
+                  as.data.frame()
+
+#Matriz de Confusión
+
+attach(resultsc)
+table(actual,prediction) %>% 
+  kbl(booktabs = TRUE, caption = "Matriz de Confusión (actual/predicho)") %>%
+    kable_styling(position = "center", full_width=FALSE, html_font = "Cambria")
+
+#Los resultados indican que hay 444 falsos positivos, 31 positivos verdaderos, 132 falsos negativos y 18 positivos falsos.
+```
+
+
+```{r,warning=FALSE, echo=FALSE}
+#Accuracy
+paste0("El accuracy es de un ", 576/625)
+
+```
+
